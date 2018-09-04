@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "__locale": "cpp",
-        "ios": "cpp"
+        "ios": "cpp",
+        "windows.h": "c"
     }
 }
