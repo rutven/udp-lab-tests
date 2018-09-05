@@ -1,20 +1,20 @@
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include < windows.h >
-#include < winsock2.h >
-// Директива линковщику: использовать библиотеку сокетов
-#pragma comment(lib, "ws2_32.lib")
-#else // LINUX
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/select.h>
-#include <netdb.h>
-#include <errno.h>
+#ifdef _WIN32 
+#define WIN32_LEAN_AND_MEAN 
+#include <windows.h> 
+#include <winsock2.h> 
+#pragma comment(lib, "ws2_32.lib") 
+#else // LINUX 
+#include <sys/types.h> 
+#include <sys/socket.h> 
+#include <sys/time.h> 
+#include <sys/select.h> 
+#include <netdb.h> 
+#include <errno.h> 
 #endif
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define MESSAGE_LENGTH 1024
 
@@ -34,7 +34,7 @@ typedef struct {
 } Message;
 
 typedef struct {
-    struct in_addr ip;
+    unsigned int ip;
     unsigned short int port;
 } ClientId;
 
@@ -49,7 +49,10 @@ typedef struct {
 	size_t size;
 } ClientArray;
 
-
+typedef struct {
+	int *sockets;
+	int maxSocket;
+} SocketData;
 
 int init() {
 #ifdef _WIN32
@@ -61,93 +64,151 @@ int init() {
 #endif
 }
 
-int * init_sockets(unsigned short int start_port, unsigned short int finish_port) {
+void init_sockets(unsigned short int start_port, unsigned short int finish_port, SocketData *socketData) {
 
 	int ports_count = finish_port - start_port;
 
 	printf("port count - %d", ports_count);
 
-	int *sockets = malloc(ports_count * sizeof *sockets);
+	socketData->maxSocket = 0;
+	socketData->sockets = malloc(ports_count * sizeof socketData->sockets);
 
 	//init network
 	init();
 
 	for (int i = 0; i < ports_count; i++) {
+
+		unsigned short int current_port = start_port + i;
+
 		int s = socket(AF_INET, SOCK_DGRAM, 0);
 		if (s < 0) {
-			fprintf(stderr, "Socket init error for port %d!", start_port + i);
-			exit(EXIT_FAILURE);
-		} else {
-			sockets[i] = s;
+			fprintf(stderr, "Socket init error for port %d!", current_port);
+			exit(EXIT_FAILURE);			
+		} else { 
+			if (socketData->maxSocket < s) {
+				socketData->maxSocket = s;
+			}
+
+			struct sockaddr_in addr;
+			// Заполнение структуры с адресом прослушивания узла 
+			memset(&addr, 0, sizeof(addr)); 
+			addr.sin_family = AF_INET; 
+			addr.sin_port = htons(current_port); // Порт для прослушивания 
+			addr.sin_addr.s_addr = htonl(INADDR_ANY);
+			// Связь адреса и сокета, чтобы он мог принимать входящие дейтаграммы 
+			if (bind(s, (struct sockaddr*) &addr, sizeof(addr)) < 0)  {
+				fprintf(stderr, "Socket bind error for port %d!", current_port);
+				exit(EXIT_FAILURE);			
+			} else {
+				socketData->sockets[i] = s;
+			}
 		}
 	}
-
-	return sockets;
 }
 
-int receive(int s, ClientArray *clientArray, FILE *f) {
-	char datagram[1024];
-	struct timeval tv = { 0, 10 * 1000 }; // 10 msec
+int sock_err(const char *function, int s) {
+    int err;
+#ifdef _WIN32
+    err = WSAGetLastError();
+#else
+    err = errno;
+#endif
+    fprintf(stderr, "%s: socket error: %d\n", function, err);
+    return -1;
+}
 
-	int res;
-	fd_set fds;
-	FD_ZERO(&fds);
-	FD_SET(s, &fds);
-
-	// Проверка - если в сокете входящие дейтаграммы // (ожидание в течение tv)
-	res = select(s + 1, &fds, 0, 0, &tv);
-	//printf("checking socket - %d\n", res);
-	if (res > 0) { // Данные есть, считывание их
-				   //printf("have some data in the socket\n");
-		struct sockaddr_in addr;
-		socklen_t addrlen = sizeof(addr);
-
-		int received = recvfrom(s, datagram, sizeof(datagram), 0,
-				(struct sockaddr *) &addr, &addrlen);
-		if (received <= 0) { // Ошибка считывания полученной дейтаграммы
-			sock_err("recvfrom", s);
-			return 0;
+ClientData * add_client(ClientArray *clientArray, ClientData newClient) {
+	if (clientArray->used == clientArray->size) {
+		size_t new_size = clientArray->size * 2;
+		ClientArray *newArray = realloc(clientArray, new_size * sizeof *clientArray);
+		if(!newArray) {
+			fprintf(stderr, "Error to resize ClientArray to %zu", new_size);
+			exit(EXIT_FAILURE);
 		}
-		printf("received %d bytes from server\n", received);
+		clientArray = newArray;
+		clientArray->size = new_size;
+	}
 
-		int i = 0;
-		do {
-			long msg_number = get_number(datagram, i, received);
-			if (msg_number < 0) {
-				break;
-			}
+	clientArray->clientData[clientArray->used++] = newClient;
+	
+	return &newClient;
+}
 
-			if (msg_number < ma->used) {
-				printf("message number %ld confirmed\n", msg_number);
-				ma->messages[msg_number].sended = 1;
-			}
-			i++;
-		} while (1 == 1);
-		return 1;
-	} else if (res == 0) { // Данных в сокете нет, возврат ошибки
-		return 0;
-	} else {
-		sock_err("select", s);
+ClientData * get_client(ClientArray *clientArray, unsigned int ip, unsigned short int port) {
+	for (int i = 0; i < clientArray->used; i++) {
+		if(clientArray->clientData[i].clientId.ip == ip && clientArray->clientData[i].clientId.port == port) {
+			return &(clientArray->clientData[i]);
+		}
+	}
+
+	ClientData newClient;
+	newClient.clientId.ip = ip;
+	newClient.clientId.port = port;
+
+	return add_client(&clientArray, newClient);
+}
+
+int receive(int s, unsigned short int port, ClientArray *clientArray, FILE *f) {
+	char datagram[1024];
+
+	printf("receiving data from port %d\n", port);
+
+	struct sockaddr_in addr;
+	socklen_t addrlen = sizeof(addr);
+
+	int received = recvfrom(s, datagram, sizeof(datagram), 0, (struct sockaddr *) &addr, &addrlen);
+	if (received <= 0) { // Ошибка считывания полученной дейтаграммы
+		sock_err("recvfrom", s);
 		return 0;
 	}
+	
+	unsigned int ip = ntohl(addr.sin_addr.s_addr);
+
+	printf("received %d bytes from client %d\n", received, ip);
+
+	ClientData *current_client = get_client(&clientArray, ip, port);
+
+	//TODO process messages
+}
+
+void init_client_array(ClientArray *ca) {
+	ca->size = 5;
+	ca->used = 0;
+	ca->clientData = malloc(ca->size * sizeof ca->clientData);
 }
 
 void start_receiving(unsigned short int start_port, unsigned short int finish_port, FILE *f) {
 	int port_count = finish_port - start_port;
 
-	int *sockets = init_sockets(start_port, finish_port);
+	SocketData socketData;
+	init_sockets(start_port, finish_port, &socketData);
 
-	ClientArray clientsData;
+	ClientArray clientArray;
+	init_client_array(&clientArray);
+
 	int stop_flag = 0;
+	struct timeval tv = { 1, 0 };
 
-	while (stop_flag == 0) {
-		for (int i = 0; i < port_count; i++  ) {
-			int result = receive(sockets[i], &clientsData, &f);
-			if (result == 1) {
-				stop_flag = 1;
+	do {
+		// prepare data for select
+		fd_set rds;
+		FD_ZERO(&rds);
+		for (int i = 0; i < port_count; i++) {
+			FD_SET(socketData.sockets[i], &rds);
+		}
+
+		// check sockets
+		if (select(socketData.maxSocket + 1, &rds, 0, 0, &tv) > 0) {
+			for (int i = 0; i < port_count; i++) {
+				if (FD_ISSET(socketData.sockets[i], &rds)) {
+					int res = receive(socketData.sockets[i], start_port + i, &clientArray, f);
+					if (res > 0) {
+						stop_flag = 1;
+					}
+				}
 			}
 		}
-	}
+	} while (stop_flag == 0);
 
 }
 
@@ -188,7 +249,7 @@ int main(int argc, char const *argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
-	start_receiving(start_port, finish_port, &f);
+	start_receiving(start_port, finish_port, f);
 
 	return EXIT_SUCCESS;
 }
