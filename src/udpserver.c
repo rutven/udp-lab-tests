@@ -40,6 +40,7 @@ typedef struct {
 
 typedef struct {
 	ClientId clientId;
+	size_t used;
 	unsigned int numbers[20];
 } ClientData;
 
@@ -117,7 +118,7 @@ int sock_err(const char *function, int s) {
     return -1;
 }
 
-ClientData * add_client(ClientArray *clientArray, ClientData newClient) {
+int add_client(ClientArray *clientArray, ClientData newClient) {
 	if (clientArray->used == clientArray->size) {
 		size_t new_size = clientArray->size * 2;
 		ClientArray *newArray = realloc(clientArray, new_size * sizeof *clientArray);
@@ -128,10 +129,10 @@ ClientData * add_client(ClientArray *clientArray, ClientData newClient) {
 		clientArray = newArray;
 		clientArray->size = new_size;
 	}
-
+	int client_pos = clientArray->used;
 	clientArray->clientData[clientArray->used++] = newClient;
 	
-	return &newClient;
+	return client_pos;
 }
 
 ClientData * get_client(ClientArray *clientArray, unsigned int ip, unsigned short int port) {
@@ -145,11 +146,37 @@ ClientData * get_client(ClientArray *clientArray, unsigned int ip, unsigned shor
 	newClient.clientId.ip = ip;
 	newClient.clientId.port = port;
 
-	return add_client(&clientArray, newClient);
+	int i = add_client(clientArray, newClient);
+	return &(clientArray->clientData[i]);
+}
+
+Message decode(char *datagram) {
+	char* pbuf = datagram;
+	Message msg;
+
+	msg.number = ntohl(*(unsigned int *)pbuf);
+	pbuf += 4;	// sizeoff(unsigned int) = 4
+
+	msg.first_time.hour = *(unsigned char *)pbuf; pbuf += 1; // sizeoff(uint8_t) = 1
+	msg.first_time.minute = *(unsigned char *)pbuf; pbuf += 1;
+	msg.first_time.second = *(unsigned char *)pbuf; pbuf += 1;
+
+	msg.second_time.hour = *(unsigned char *)pbuf; pbuf += 1;
+	msg.second_time.minute = *(unsigned char *)pbuf; pbuf += 1;
+	msg.second_time.second = *(unsigned char *)pbuf; pbuf += 1;
+
+	msg.bbb = ntohl(*(unsigned int *)pbuf);
+	pbuf += 4;	// sizeoff(unsigned int) = 4
+ 	memset(msg.message, '\0', sizeof(msg.message));
+	strcpy(msg.message, pbuf);
+
+	return msg;
 }
 
 int receive(int s, unsigned short int port, ClientArray *clientArray, FILE *f) {
 	char datagram[1024];
+	char ip_port[22];
+	int stop_flag = 0;
 
 	printf("receiving data from port %d\n", port);
 
@@ -164,11 +191,44 @@ int receive(int s, unsigned short int port, ClientArray *clientArray, FILE *f) {
 	
 	unsigned int ip = ntohl(addr.sin_addr.s_addr);
 
-	printf("received %d bytes from client %d\n", received, ip);
+	sprintf(ip_port,"%u.%u.%u.%u:%u",
+				(ip >> 24) & 0xFF, (ip >> 16) & 0xFF, 
+		       	(ip >> 8) & 0xFF, (ip) & 0xFF,
+				ntohs(addr.sin_port));
 
-	ClientData *current_client = get_client(&clientArray, ip, port);
+	printf("received %d bytes from client %s\n", received, ip_port);
 
-	//TODO process messages
+	ClientData *current_client = get_client(clientArray, ip, port);
+
+	Message msg = decode(datagram);
+
+	// looking for received messages
+	int msg_num = -1;
+	if (current_client->used > 0) {
+		for (int i = 0; i < current_client->used; i++) {
+			if (current_client->numbers[i] == msg.number) {
+				msg_num = i;
+				break;
+			}
+		}
+	}
+
+	if (msg_num < 0) { // if message not found save it to file and save message number
+		fprintf(f,"%s %02u:%02u:%02u %02u:%02u:%02u %lu %s\n", ip_port, 
+			msg.first_time.hour, msg.first_time.minute, msg.first_time.second,
+			msg.second_time.hour, msg.second_time.minute, msg.second_time.second,
+			msg.bbb, msg.message);
+		current_client->numbers[current_client->used++] = msg.number;
+
+		if (strlen(msg.message) == 4) {
+		   if (strncmp(msg.message,"stop",4) == 0) {
+				fprintf(stdout," Stop server\n");
+				stop_flag = 1;
+		   }
+		}
+	}
+
+	return stop_flag;
 }
 
 void init_client_array(ClientArray *ca) {
