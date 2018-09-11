@@ -69,10 +69,10 @@ void init_sockets(unsigned short int start_port, unsigned short int finish_port,
 
 	int ports_count = finish_port - start_port;
 
-	printf("port count - %d", ports_count);
+	printf("port count - %d\n", ports_count);
 
 	socketData->maxSocket = 0;
-	socketData->sockets = malloc(ports_count * sizeof socketData->sockets);
+	socketData->sockets = (int *) malloc(ports_count * sizeof socketData->sockets);
 
 	//init network
 	init();
@@ -83,7 +83,7 @@ void init_sockets(unsigned short int start_port, unsigned short int finish_port,
 
 		int s = socket(AF_INET, SOCK_DGRAM, 0);
 		if (s < 0) {
-			fprintf(stderr, "Socket init error for port %d!", current_port);
+			fprintf(stderr, "Socket init error for port %d!\n", current_port);
 			exit(EXIT_FAILURE);			
 		} else { 
 			if (socketData->maxSocket < s) {
@@ -98,7 +98,7 @@ void init_sockets(unsigned short int start_port, unsigned short int finish_port,
 			addr.sin_addr.s_addr = htonl(INADDR_ANY);
 			// Связь адреса и сокета, чтобы он мог принимать входящие дейтаграммы 
 			if (bind(s, (struct sockaddr*) &addr, sizeof(addr)) < 0)  {
-				fprintf(stderr, "Socket bind error for port %d!", current_port);
+				fprintf(stderr, "Socket bind error for port %d!\n", current_port);
 				exit(EXIT_FAILURE);			
 			} else {
 				socketData->sockets[i] = s;
@@ -121,9 +121,9 @@ int sock_err(const char *function, int s) {
 int add_client(ClientArray *clientArray, ClientData newClient) {
 	if (clientArray->used == clientArray->size) {
 		size_t new_size = clientArray->size * 2;
-		ClientArray *newArray = realloc(clientArray, new_size * sizeof *clientArray);
+		ClientArray *newArray = (ClientArray *) realloc(clientArray, new_size * sizeof *clientArray);
 		if(!newArray) {
-			fprintf(stderr, "Error to resize ClientArray to %zu", new_size);
+			fprintf(stderr, "Error to resize ClientArray to %zu\n", new_size);
 			exit(EXIT_FAILURE);
 		}
 		clientArray = newArray;
@@ -173,6 +173,64 @@ Message decode(char *datagram) {
 	return msg;
 }
 
+int serialize_numbers(ClientData current_client, unsigned int *buffer) {
+	int max_num = 20;
+
+	if (current_client.used < max_num) {
+		max_num = current_client.used;
+	}
+
+	for (int i = 0; i < max_num; i++) {
+		printf("number - %d\n", current_client.numbers[i]);
+
+		unsigned int cur_num = htonl(current_client.numbers[i]);
+
+		printf("converted - %ul \n", cur_num);
+
+		buffer[i] = cur_num;
+	}
+
+	return max_num * sizeof *current_client.numbers;
+}
+
+int send_response(ClientData current_client) {
+	// Create UDP socket
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (s < 0) {
+    	return sock_err("socket", s);
+	}
+
+    struct sockaddr_in client_address;
+
+    // Заполнение структуры с адресом удаленного узла
+    memset(&client_address, 0, sizeof(client_address));
+    client_address.sin_family = AF_INET;
+    client_address.sin_port = htonl(current_client.clientId.port);
+    client_address.sin_addr.s_addr = htonl(current_client.clientId.ip);
+
+    printf("send numbers to %u.%u.%u.%u:%u\n", 
+			(current_client.clientId.ip >> 24) & 0xFF, (current_client.clientId.ip >> 16) & 0xFF, 
+		    (current_client.clientId.ip >> 8) & 0xFF, (current_client.clientId.ip) & 0xFF,
+			current_client.clientId.port);
+
+    unsigned int datagram[50];
+
+    int datagram_size = serialize_numbers(current_client, &datagram[0]);
+
+	printf("sending %d bytes\n", datagram_size);
+
+    size_t sended = sendto(s, datagram, datagram_size, 0, (struct sockaddr *)&client_address, sizeof(client_address));
+
+	if (sended == 0) {
+		printf("error sending data \n");
+	} else if (sended < datagram_size) {
+		printf("sended less\n");
+	}
+
+	return 0;
+}
+
 int receive(int s, unsigned short int port, ClientArray *clientArray, FILE *f) {
 	char datagram[1024];
 	char ip_port[22];
@@ -198,9 +256,11 @@ int receive(int s, unsigned short int port, ClientArray *clientArray, FILE *f) {
 
 	printf("received %d bytes from client %s\n", received, ip_port);
 
-	ClientData *current_client = get_client(clientArray, ip, port);
+	ClientData *current_client = get_client(clientArray, ip, ntohs(addr.sin_port));
 
 	Message msg = decode(datagram);
+
+	printf("received message - %d, %s\n", msg.number, msg.message);
 
 	// looking for received messages
 	int msg_num = -1;
@@ -228,13 +288,16 @@ int receive(int s, unsigned short int port, ClientArray *clientArray, FILE *f) {
 		}
 	}
 
+	// send response
+	send_response(*current_client);
+
 	return stop_flag;
 }
 
 void init_client_array(ClientArray *ca) {
 	ca->size = 5;
 	ca->used = 0;
-	ca->clientData = malloc(ca->size * sizeof ca->clientData);
+	ca->clientData = (ClientData *) malloc(ca->size * sizeof ca->clientData);
 }
 
 void start_receiving(unsigned short int start_port, unsigned short int finish_port, FILE *f) {
@@ -308,6 +371,8 @@ int main(int argc, char const *argv[]) {
 		fprintf(stderr, "error: Cannot open %s\n", FILE_NAME);
 		exit(EXIT_FAILURE);
 	}
+
+	printf("Start receiving!\n");
 
 	start_receiving(start_port, finish_port, f);
 

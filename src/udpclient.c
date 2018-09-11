@@ -251,6 +251,8 @@ int receive(MessageArray *ma, int s)
             {
                 printf("message number %ld confirmed\n", msg_number);
                 ma->messages[msg_number].sended = 1;
+            } else {
+                printf("unknown message number - %ld \n", msg_number);
             }
             i++;
         } while (1 == 1);
@@ -282,14 +284,14 @@ int main(int argc, char *argv[])
     }
 
     // Check host
-    if ((host = (char *)strtok_r(argv[1], ":", &str_ptr)) == NULL)
+    if ((host = strtok(argv[1], ":")) == NULL)
     {
         fprintf(stderr, "error: Cannot find host %s\n", argv[1]);
         exit(EXIT_FAILURE);
     }
 
     // Check port
-    if ((port = (char *)strtok_r(NULL, ":", &str_ptr)) == NULL)
+    if ((port = strtok(NULL, ":")) == NULL)
     {
         fprintf(stderr, "error: Cannot find port %s\n", argv[1]);
         exit(EXIT_FAILURE);
